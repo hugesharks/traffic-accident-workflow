@@ -289,10 +289,19 @@ def run_workflow(case_input: dict, output_dir: str = None, template_path: str = 
     # 3. 要素式起诉状
     # ========================================
     if template_path is None:
-        template_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            '模板_民事起诉状.docx'
-        )
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # 优先查找 templates/ 目录（Skill包结构）
+        template_candidates = [
+            os.path.join(script_dir, '..', 'templates', '模板_民事起诉状.docx'),
+            os.path.join(script_dir, '模板_民事起诉状.docx'),
+            os.path.join(script_dir, '..', '模板_民事起诉状.docx'),
+        ]
+        for candidate in template_candidates:
+            if os.path.exists(candidate):
+                template_path = os.path.abspath(candidate)
+                break
+        else:
+            template_path = None
 
     if os.path.exists(template_path):
         # 更新case的证据列表为规则库生成的版本
