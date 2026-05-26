@@ -31,8 +31,8 @@ CASE_INPUT_TEMPLATE = {
     "plaintiff_gender": "男/女",
     "plaintiff_birthdate": "1970年6月15日",
     "plaintiff_ethnicity": "汉族",
-    "plaintiff_phone": "13831910001",
-    "plaintiff_id_number": "130531197006150011",
+    "plaintiff_phone": "1XX00000000",
+    "plaintiff_id_number": "130531197001010000",
     "plaintiff_address": "河北省邢台市××区××路××号",
     "plaintiff_age": 55,  # 受害人年龄（计算赔偿年限用）
 
@@ -301,7 +301,14 @@ def run_workflow(case_input: dict, output_dir: str = None, template_path: str = 
                 template_path = os.path.abspath(candidate)
                 break
         else:
-            template_path = None
+            # 尝试从base64编码文件解码模板
+            try:
+                from template_loader import ensure_template
+                decoded = ensure_template(script_dir)
+                if decoded:
+                    template_path = decoded
+            except Exception:
+                template_path = None
 
     if os.path.exists(template_path):
         # 更新case的证据列表为规则库生成的版本
@@ -366,15 +373,15 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.demo or not args.input:
-        # 演示数据：冉某江案
+        # 演示数据（已脱敏，仅供参考）
         case_input = {
-            "plaintiff_name": "冉某江",
+            "plaintiff_name": "冉某",
             "plaintiff_gender": "男",
-            "plaintiff_birthdate": "1970年6月15日",
+            "plaintiff_birthdate": "1970年1月1日",
             "plaintiff_ethnicity": "汉族",
-            "plaintiff_phone": "13831910001",
-            "plaintiff_id_number": "130531197006150011",
-            "plaintiff_address": "河北省邢台市广宗县塘疃乡常阜村",
+            "plaintiff_phone": "1XX00000001",
+            "plaintiff_id_number": "130531197001010000",
+            "plaintiff_address": "河北省邢台市XX县XX乡XX村",
             "plaintiff_age": 55,
 
             "case_type": "criminal_attached",
@@ -399,15 +406,15 @@ if __name__ == '__main__':
             "other_fee": 0,
 
             "accident_date": "2023年10月28日",
-            "accident_detail": "2023年10月28日13时50分，被告驾驶冀E1××某某号小型轿车由北向南行驶至广宗县常阜村南十字路口处时，与前方同向行驶向左转弯的被害人高某芝驾驶的电动三轮车相碰撞，致高某芝受伤，后经医院抢救无效于2023年11月8日死亡。",
-            "responsibility_result": "本次事故经广宗县公安局交通警察大队道路交通事故认定书认定，被告人潘某坤负本起事故的主要责任，被害人高某芝负次要责任。",
-            "insurance_info": "被告驾驶的冀E1××某某号小型轿车在中国某某财产保险股份有限公司邢台市中心支公司投保机动车交强险和商业第三者责任保险（保险金额200万元）。",
+            "accident_detail": "2023年10月28日，被告驾驶小型轿车行驶至某路口处时，与被害人驾驶的电动三轮车相碰撞，致被害人受伤，后经医院抢救无效死亡。",
+            "responsibility_result": "本次事故经交警大队认定，被告负主要责任，被害人负次要责任。",
+            "insurance_info": "被告驾驶的车辆在某保险公司投保机动车交强险和商业第三者责任保险（保险金额200万元）。",
 
             "defendants_person": [
-                {"name": "潘某坤", "gender": "男"}
+                {"name": "潘某", "gender": "男"}
             ],
             "defendants_company": [
-                {"name": "中国某某财产保险股份有限公司邢台市中心支公司"}
+                {"name": "XX财产保险股份有限公司XX支公司"}
             ],
 
             "court": "河北省广宗县人民法院",

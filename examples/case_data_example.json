@@ -1,11 +1,11 @@
 {
-    "plaintiff_name": "张某某",
+    "plaintiff_name": "张某",
     "plaintiff_gender": "男",
-    "plaintiff_birthdate": "1980年5月12日",
+    "plaintiff_birthdate": "1980年1月1日",
     "plaintiff_ethnicity": "汉族",
-    "plaintiff_phone": "13800000000",
-    "plaintiff_id_number": "130500198005120000",
-    "plaintiff_address": "河北省邢台市桥西区××路××号",
+    "plaintiff_phone": "1XX00000000",
+    "plaintiff_id_number": "130500198001010000",
+    "plaintiff_address": "河北省邢台市XX区XX路XX号",
     "plaintiff_age": 45,
 
     "case_type": "civil",
@@ -15,37 +15,31 @@
     "standard_year": "2025",
     "region": "urban",
 
-    "hospital_name": "邢台市人民医院",
+    "hospital_name": "XX市人民医院",
     "hospital_days": 45,
     "medical_fee": 52340.80,
-    "hospital_meal_daily": 100,
-    "nutrition_days": 60,
-    "nutrition_daily": 20,
-    "nursing_days": 45,
-    "nursing_persons": 1,
-    "nursing_custom_daily": 163.34,
-    "lost_work_days": 180,
-    "lost_work_daily": 163.34,
+    "meal_subsidy_rate": 100,
+    "nutrition_rate": 30,
 
-    "traffic_fee": 680,
-    "property_damage": 0,
-    "other_fee": 0,
-    "other_fee_desc": "",
+    "disability_level": 10,
+    "disability_description": "左桡骨远端骨折",
 
-    "disability_grade": 10,
+    "wrongful_death_income_rate": 178,
+    "nursing_rate": 163.34,
 
-    "accident_date": "2025年3月15日",
-    "accident_detail": "2025年3月15日10时30分，被告驾驶冀E××某某号小型轿车沿××路由东向西行驶至××路口时，与原告驾驶的电动自行车发生碰撞，致原告受伤。",
-    "responsibility_result": "本次事故经××交警大队认定，被告负主要责任，原告负次要责任。",
-    "insurance_info": "被告驾驶的冀E××某某号车辆在某某财产保险股份有限公司投保交强险和商业三者险100万元。",
+    "transport_fee": 500,
+    "vehicle_damage": 0,
+    "appraisal_fee": 0,
 
     "defendants_person": [
-        {"name": "李某某", "gender": "男"}
+        {
+            "name": "李某",
+            "gender": "男",
+            "phone": "1XX00000001",
+            "id_number": "130500198501010000",
+            "address": "河北省邢台市XX区XX路XX号"
+        }
     ],
-    "defendants_company": [
-        {"name": "某某财产保险股份有限公司邢台中心支公司"}
-    ],
-
-    "court": "河北省邢台市桥西区人民法院",
-    "filing_date": ""
+    "insurance_company": "XX财产保险股份有限公司XX支公司",
+    "commercial_insurance_limit": 1000000
 }
