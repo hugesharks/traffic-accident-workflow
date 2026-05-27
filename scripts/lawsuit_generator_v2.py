@@ -438,21 +438,60 @@ class CaseData:
 # 要素式起诉状生成器
 # ============================================================
 class LawsuitGenerator:
-    """要素式起诉状生成器"""
+    """要素式起诉状生成器（区域定位填充版 v3.0）"""
+
+    # 注册命名空间
+    NAMESPACES = {
+        'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+        'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+        'mc': 'http://schemas.openxmlformats.org/markup-compatibility/2006',
+        'w14': 'http://schemas.microsoft.com/office/word/2010/wordml',
+    }
+    EXTRA_NS = {
+        'wp': 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing',
+        'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+        'pic': 'http://schemas.openxmlformats.org/drawingml/2006/picture',
+        'xml': 'http://www.w3.org/XML/1998/namespace',
+        'wne': 'http://schemas.microsoft.com/office/word/2006/wordml',
+    }
 
     def __init__(self, template_path, output_dir='.'):
         self.template_path = template_path
         self.output_dir = output_dir
         self.unpacked_dir = None
+        self.root = None
+        self._xml_decl = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
 
     def generate(self, case: CaseData, output_filename='民事起诉状.docx'):
         """一键生成"""
         self._unpack()
-        self._fill(case)
-        output = self._pack(output_filename)
-        self._cleanup()
-        return output
+        self._parse_xml()
 
+        # 1. 计算赔偿结果
+        result = case.calculate()
+
+        # 2. 构建区域索引
+        section_map = self._build_section_map()
+
+        # 3. 构建填充数据
+        fill_data = self._build_fill_data(case, result)
+
+        # 4. 区域内字段填充
+        for sf in fill_data.get('section_fills', []):
+            self._fill_section(sf, section_map)
+
+        # 5. 勾选框处理
+        for cb in fill_data.get('checkbox_ops', []):
+            self._do_checkbox(cb, section_map)
+
+        # 6. 保存输出
+        output = self._save_and_pack(output_filename)
+        self._cleanup()
+        return output, result
+
+    # ================================================================
+    # XML 解析与保存
+    # ================================================================
     def _unpack(self):
         self.unpacked_dir = self.template_path.replace('.docx', '_work')
         if os.path.exists(self.unpacked_dir):
@@ -460,7 +499,21 @@ class LawsuitGenerator:
         with zipfile.ZipFile(self.template_path, 'r') as zf:
             zf.extractall(self.unpacked_dir)
 
-    def _pack(self, filename):
+    def _parse_xml(self):
+        for prefix, uri in self.NAMESPACES.items():
+            ET.register_namespace(prefix, uri)
+        for prefix, uri in self.EXTRA_NS.items():
+            ET.register_namespace(prefix, uri)
+
+        doc_path = os.path.join(self.unpacked_dir, 'word/document.xml')
+        self.root = ET.parse(doc_path).getroot()
+
+    def _save_and_pack(self, filename):
+        doc_path = os.path.join(self.unpacked_dir, 'word/document.xml')
+        xml_str = ET.tostring(self.root, encoding='unicode')
+        with open(doc_path, 'w', encoding='utf-8') as f:
+            f.write(self._xml_decl + xml_str)
+
         output_path = os.path.join(self.output_dir, filename)
         if os.path.exists(output_path):
             os.remove(output_path)
@@ -476,218 +529,684 @@ class LawsuitGenerator:
         if self.unpacked_dir and os.path.exists(self.unpacked_dir):
             shutil.rmtree(self.unpacked_dir)
 
-    def _fill(self, case: CaseData):
-        """填充模板"""
-        result = case.calculate()
+    # ================================================================
+    # 辅助方法
+    # ================================================================
+    def _get_para_text(self, p) -> str:
+        """获取段落完整文本"""
+        ns = self.NAMESPACES
+        texts = p.findall('.//w:t', ns)
+        return ''.join([t.text for t in texts if t.text])
 
-        doc_path = os.path.join(self.unpacked_dir, 'word/document.xml')
-        with open(doc_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+    # ================================================================
+    # 区域索引
+    # ================================================================
+    def _build_section_map(self) -> dict:
+        """
+        构建段落区域索引
+        返回: {"原告_自然人": (start_idx, end_idx), "被告_法人": ..., ...}
+        """
+        ns = self.NAMESPACES
+        paragraphs = list(self.root.findall('.//w:p', ns))
 
-        # === 金额替换 ===
-        amount_replacements = [
-            ('>393155.55<', f'>{result["total_amount"]:.2f}<'),
-            ('>167034.15<', f'>{result["medical_fee"]:.2f}<'),
-            ('>21367<', f'>{result["nursing_fee"]:.2f}<'),
-            ('>4500<', f'>{result["nutrition_fee"]:.2f}<'),
-            ('>3900<', f'>{result["hospital_meal_fee"]:.2f}<'),
-            ('>30150<', f'>{result["lost_wage"]:.2f}<'),
-            ('>1211.5<', f'>{result["traffic_fee"]:.2f}<'),
-            ('>139992.9<', f'>{result["disability_compensation"] or result["death_compensation"]:.2f}<'),
-            ('>5000<', f'>{result["mental_damage_fee"]:.2f}<'),
-            ('>20000<', f'>{result["other_fee"]:.2f}<'),
-        ]
+        # 当事人标记（可跟子类型）
+        PERSON_MARKERS = {'原告', '被告', '第三人'}
+        # 代理人标记
+        AGENT_MARKERS = {'委托诉讼代理人'}
+        # 独立区域标记
+        SECTION_MARKERS = {
+            '诉讼请求': '诉讼请求',
+            '诉前保全及鉴定申请': '诉前保全及鉴定申请',
+            '事实与理由': '事实与理由',
+            '对纠纷解决方式的意愿': '对纠纷解决方式的意愿',
+        }
 
-        for old, new in amount_replacements:
-            content = content.replace(old, new)
+        section_map = {}
+        current_section = None
+        section_start = None
 
-        # === 当事人信息替换 ===
+        for i, p in enumerate(paragraphs):
+            text = self._get_para_text(p).strip()
+            new_section = None
+
+            # 子类型行
+            if text == '（自然人）':
+                if current_section in PERSON_MARKERS:
+                    new_section = f'{current_section}_自然人'
+            elif text == '（法人、非法人组织）':
+                if current_section in PERSON_MARKERS:
+                    new_section = f'{current_section}_法人'
+            # 当事人标记
+            elif text in PERSON_MARKERS:
+                new_section = text
+            # 代理人标记
+            elif text in AGENT_MARKERS:
+                new_section = text
+            # 独立区域标记
+            else:
+                for marker, section_name in SECTION_MARKERS.items():
+                    if text == marker or text.startswith(marker):
+                        new_section = section_name
+                        break
+                # 签名区
+                if text.startswith('具状人'):
+                    new_section = '签名区'
+
+            if new_section:
+                # 保存前一个区域
+                if current_section and section_start is not None:
+                    section_map[current_section] = (section_start, i)
+                current_section = new_section
+                section_start = i
+
+        # 最后一个区域
+        if current_section and section_start is not None:
+            section_map[current_section] = (section_start, len(paragraphs))
+
+        # 后处理：无子类型的当事人自动加_自然人
+        sections_to_rename = {}
+        for section_name in list(section_map.keys()):
+            if section_name in PERSON_MARKERS:
+                has_subtype = any(s.startswith(section_name + '_') for s in section_map)
+                if not has_subtype:
+                    sections_to_rename[section_name] = f'{section_name}_自然人'
+        for old_name, new_name in sections_to_rename.items():
+            section_map[new_name] = section_map.pop(old_name)
+
+        return section_map
+
+    # ================================================================
+    # 填充数据构建
+    # ================================================================
+    def _build_fill_data(self, case: CaseData, result: dict) -> dict:
+        """从CaseData和计算结果生成结构化填充数据"""
+        section_fills = []
+        checkbox_ops = []
+
+        # === 原告_自然人 ===
         if case.plaintiffs:
             p = case.plaintiffs[0]
-            content = content.replace('>荆<', f'>{p["name"][0]}<')
-            content = content.replace('> ××<', f'> {p["name"][1:] if len(p["name"]) > 1 else ""}<')
-            content = content.replace('>×××××××××××<', f'>{p.get("phone", "")}<')
-            content = content.replace('>×××××××××××××××××<', f'>{p.get("id_number", "")}<')
-            content = content.replace('>19×× 年  × 月  × 日<', f'>{p.get("birthdate", "")}<')
-            content = content.replace('>山东省齐河县 ××× 镇  ×× 村  ××× 号<', f'>{p.get("address", "")}<')
-            content = content.replace('>具状人（签字、盖章）： 荆 ××<', f'>具状人（签字、盖章）： {p["name"]}<')
+            fields = {}
+            checkboxes = {}
 
-            # 事实与理由中的原告姓名
-            content = content.replace(
-                '荆 ×× 因与肇事车辆发生交通事故受伤',
-                f'{p["name"]}因与肇事车辆发生交通事故受伤'
-            )
+            if p.get('name'):
+                fields['姓名：'] = p['name']
+            if p.get('gender'):
+                checkboxes['性别：男'] = (p['gender'] == '男')
+                checkboxes['性别：女'] = (p['gender'] == '女')
+            if p.get('birthdate'):
+                fields['出生日期：'] = p['birthdate']
+            if p.get('ethnicity'):
+                fields['民族：'] = p['ethnicity']
+            if p.get('work'):
+                fields['工作单位：'] = p['work']
+            if p.get('position'):
+                fields['职务：'] = p['position']
+            if p.get('phone'):
+                fields['联系电话：'] = p['phone']
+            if p.get('address'):
+                fields['住所地（户籍所在地）：'] = p['address']
+            if p.get('residence'):
+                fields['经常居住地：'] = p['residence']
+            if p.get('id_number'):
+                fields['证件号码：'] = p['id_number']
 
-        # === 日期 ===
-        filing_date = case.filing_date or datetime.now().strftime('%Y 年 %m 月 %d 日')
-        content = content.replace('>×× 年  ×× 月  ××  日<', f'>{filing_date}<')
+            section_fills.append({
+                'section': '原告_自然人',
+                'fields': fields,
+                'checkboxes': checkboxes,
+            })
 
-        # === 事实与理由 ===
+        # === 被告_自然人 ===
+        if case.defendants_person:
+            d = case.defendants_person[0]
+            fields = {}
+            checkboxes = {}
+
+            if d.get('name'):
+                fields['姓名：'] = d['name']
+            if d.get('gender'):
+                checkboxes['性别：男'] = (d['gender'] == '男')
+                checkboxes['性别：女'] = (d['gender'] == '女')
+            if d.get('birthdate'):
+                fields['出生日期：'] = d['birthdate']
+            if d.get('address'):
+                fields['住所地（户籍所在地）：'] = d['address']
+            if d.get('id_number'):
+                fields['证件号码：'] = d['id_number']
+            if d.get('phone'):
+                fields['联系电话：'] = d['phone']
+
+            section_fills.append({
+                'section': '被告_自然人',
+                'fields': fields,
+                'checkboxes': checkboxes,
+            })
+
+        # === 被告_法人 ===
+        if case.defendants_company:
+            c = case.defendants_company[0]
+            fields = {}
+            checkboxes = {}
+
+            if c.get('name'):
+                fields['名称：'] = c['name']
+            if c.get('address'):
+                fields['住所地（主要办事机构所在地）：'] = c['address']
+            if c.get('legal_person'):
+                fields['法定代表人 / 负责人：'] = c['legal_person']
+            if c.get('position'):
+                fields['职务：'] = c['position']
+            if c.get('phone'):
+                fields['联系电话：'] = c['phone']
+            if c.get('credit_code'):
+                fields['统一社会信用代码：'] = c['credit_code']
+            # 公司类型勾选
+            company_type = c.get('type', '')
+            if company_type:
+                type_map = {
+                    '有限责任公司': '有限责任公司',
+                    '股份有限公司': '股份有限公司',
+                    '上市公司': '上市公司',
+                }
+                if company_type in type_map:
+                    checkboxes[type_map[company_type]] = True
+            # 所有制性质
+            ownership = c.get('ownership', '')
+            if ownership:
+                own_map = {'国有': '国有', '民营': '民营'}
+                if ownership in own_map:
+                    checkboxes[own_map[ownership]] = True
+
+            section_fills.append({
+                'section': '被告_法人',
+                'fields': fields,
+                'checkboxes': checkboxes,
+            })
+
+        # === 委托诉讼代理人 ===
+        if case.agents:
+            a = case.agents[0]
+            agent_fields = {}
+            agent_checkboxes = {'有': True}
+
+            if a.get('name'):
+                agent_fields['姓名：'] = a['name']
+            if a.get('unit'):
+                agent_fields['单位：'] = a['unit']
+            if a.get('position'):
+                agent_fields['职务：'] = a['position']
+            if a.get('phone'):
+                agent_fields['联系电话：'] = a['phone']
+            authority = a.get('authority', '')
+            if authority == '特别授权':
+                agent_checkboxes['特别授权'] = True
+            elif authority == '一般授权':
+                agent_checkboxes['一般授权'] = True
+
+            section_fills.append({
+                'section': '委托诉讼代理人',
+                'fields': agent_fields,
+                'checkboxes': agent_checkboxes,
+            })
+        else:
+            # 无代理人
+            section_fills.append({
+                'section': '委托诉讼代理人',
+                'fields': {},
+                'checkboxes': {'有': False, '无': True},
+            })
+
+        # === 诉讼请求区 ===
+        request_fields = {}
+        request_checkboxes = {}
+
+        # 1. 医疗费
+        if result.get('medical_fee', 0) > 0:
+            request_fields['累计发生医疗费'] = f'{result["medical_fee"]:.2f}'
+            if case.hospital_name:
+                request_fields['医院住院（门'] = case.hospital_name
+            request_checkboxes['医疗费发票、医疗费清单、病历资料：有'] = True
+
+        # 2. 护理费
+        if result.get('nursing_fee', 0) > 0:
+            nursing_days = case.nursing_days or case.hospital_days
+            request_fields['住院护理'] = f'{nursing_days}'
+            request_fields['支付护理费'] = f'{result["nursing_fee"]:.2f}'
+            request_checkboxes['住院证明、医嘱等：有'] = True
+
+        # 3. 营养费
+        if result.get('nutrition_fee', 0) > 0:
+            request_fields['营养费'] = f'{result["nutrition_fee"]:.2f}'
+            request_checkboxes['病历资料：有'] = (result['nutrition_fee'] > 0)
+
+        # 4. 住院伙食补助费
+        if result.get('hospital_meal_fee', 0) > 0:
+            request_fields['住院伙食补助费'] = f'{result["hospital_meal_fee"]:.2f}'
+
+        # 5. 误工费
+        if result.get('lost_wage', 0) > 0:
+            request_fields['误工费'] = f'{result["lost_wage"]:.2f}'
+
+        # 6. 交通费
+        if result.get('traffic_fee', 0) > 0:
+            request_fields['交通费'] = f'{result["traffic_fee"]:.2f}'
+            request_checkboxes['交通费凭证：有'] = True
+
+        # 7. 残疾赔偿金
+        if case.injury_type == CaseData.INJURY_DISABILITY and result.get('disability_compensation', 0) > 0:
+            request_fields['残疾赔偿金'] = f'{result["disability_compensation"]:.2f}'
+            if result.get('dependent_living', 0) > 0:
+                request_fields['被扶养人生活费'] = f'{result["dependent_living"]:.2f}'
+
+        # 8. 残疾辅助器具费
+        if result.get('assistive_device_fee', 0) > 0:
+            request_fields['残疾辅助器具费'] = f'{result["assistive_device_fee"]:.2f}'
+
+        # 9. 死亡赔偿金、丧葬费
+        if case.injury_type == CaseData.INJURY_DEATH:
+            if result.get('death_compensation', 0) > 0:
+                request_fields['死亡赔偿金'] = f'{result["death_compensation"]:.2f}'
+            if result.get('funeral_fee', 0) > 0:
+                request_fields['丧葬费'] = f'{result["funeral_fee"]:.2f}'
+
+        # 10. 精神损害抚慰金
+        if result.get('mental_damage_fee', 0) > 0:
+            request_fields['精神损害抚慰金'] = f'{result["mental_damage_fee"]:.2f}'
+
+        # 11. 财产损失
+        if result.get('property_damage', 0) > 0:
+            request_fields['车辆损失：'] = f'{result["property_damage"]:.2f}元'
+        if case.other_fee_desc and result.get('other_fee', 0) > 0:
+            request_fields['其他损失：'] = f'{case.other_fee_desc}{result["other_fee"]:.2f}元'
+
+        # 13. 标的总额
+        request_fields['标的总额'] = f'{result["total_amount"]:.2f}'
+
+        section_fills.append({
+            'section': '诉讼请求',
+            'fields': request_fields,
+            'checkboxes': request_checkboxes,
+        })
+
+        # === 诉前保全及鉴定申请区 ===
+        checkbox_ops.append({
+            'section': '诉前保全及鉴定申请',
+            'paragraph_contains': '诉前保全',
+            'before_checkbox': '否',
+            'check': True,
+        })
+        checkbox_ops.append({
+            'section': '诉前保全及鉴定申请',
+            'paragraph_contains': '鉴定',
+            'before_checkbox': '是',
+            'check': case.injury_type in (CaseData.INJURY_DISABILITY, CaseData.INJURY_DEATH),
+        })
+
+        # === 事实与理由区 ===
+        fact_fields = {}
         if case.accident_detail:
-            content = content.replace(
-                '2023 年 1 月 9 日 19 时 18 分在齐河县  ×× 路  ××× 镇  ×× 路段，被告驾 驶的车牌号为鲁 A××××× 的车辆与原告发生交通事故，导致原告受伤。',
-                case.accident_detail
-            )
-
+            fact_fields['1. 交通事故发生情况'] = case.accident_detail
         if case.responsibility_result:
-            content = content.replace(
-                '本次事故经齐河县公安局交通警察大队出具第 371425××××××××× ××× 号道路交通事故认定书，认定在本次事故中原告无责任、被告负全 部责任。',
-                case.responsibility_result
-            )
-
+            fact_fields['2. 交通事故责任认定'] = case.responsibility_result
         if case.insurance_info:
-            content = content.replace(
-                '被告驾驶车牌号为鲁 A××××× 的车辆在被告  ×× 财产保险有限责任公 司济南分公司投保，交强险 20 万元，期限自 2022 年 3 月 1  日起至 2023 年 3 月 1 日止；在  ×××× 保险股份有限公司济南中心支公司投保第三者责 任险 100 万元，期限自 2022 年 3 月 1  日起至 2023 年 3 月 1 日止。',
-                case.insurance_info
-            )
+            fact_fields['3. 机动车投保情况'] = case.insurance_info
+        # 请求依据：自动生成
+        liability_pct = HEBEI_STANDARD['liability_ratio'].get(case.liability_type, 1.0) * 100
+        request_basis = f'被告{case.liability_type}（{liability_pct:.0f}%），应当承担赔偿责任。'
+        if case.defendants_company:
+            request_basis += '保险公司应在交强险和商业三者险限额内承担赔偿责任。'
+        fact_fields['4. 请求依据'] = request_basis
 
         # 证据清单
         if case.evidence_list:
-            evidence_text = '；'.join([f'{i+1}. {item}' for i, item in enumerate(case.evidence_list)])
-            evidence_text += '。'
-            content = content.replace(
-                '1. 医疗费凭证、病历资料一宗；2. 交通费凭证 5 张；3. 交通事故责任认定 书；4. 鉴定意见。',
-                evidence_text
-            )
+            evidence_items = [f'{i+1}. {item}' for i, item in enumerate(case.evidence_list)]
+            fact_fields['5. 证据清单'] = '；'.join(evidence_items) + '。'
 
-        # === 死亡案件特殊处理 ===
-        if case.injury_type == CaseData.INJURY_DEATH:
-            # "残疾赔偿金"改为"死亡赔偿金"
-            content = content.replace(
-                '7. 残疾赔偿金（含被扶养人生活费）',
-                '7. 死亡赔偿金、丧葬费'
-            )
-            # 填入死亡赔偿金+丧葬费
-            death_total = result['death_compensation'] + result['funeral_fee']
-            content = content.replace(
-                f'残疾赔偿金 {result["disability_compensation"] or result["death_compensation"]:.2f} 元',
-                f'死亡赔偿金 {result["death_compensation"]:.2f} 元、丧葬费 {result["funeral_fee"]:.2f} 元'
-            )
+        section_fills.append({
+            'section': '事实与理由',
+            'fields': fact_fields,
+            'checkboxes': {},
+        })
 
-        # === 诉讼请求总额描述 ===
-        if case.injury_type == CaseData.INJURY_DEATH:
-            content = content.replace(
-                '判决被告支付医疗费、护理费、营养费、住院伙食补助费、误工费、交通费、残疾赔偿金、精神损害抚慰金、后续治疗费、鉴定费等共计',
-                '判决被告支付医疗费、护理费、营养费、住院伙食补助费、误工费、交通费、死亡赔偿金、丧葬费等共计'
-            )
-        elif case.injury_type == CaseData.INJURY_DISABILITY:
-            content = content.replace(
-                '精神损害抚慰金、后续治疗费、鉴定费等共计',
-                '精神损害抚慰金、鉴定费等共计'
-            )
+        # === 签名区 ===
+        signature_fields = {}
+        if case.plaintiffs:
+            signature_fields['具状人（签字、盖章）：'] = case.plaintiffs[0].get('name', '')
+        filing_date = case.filing_date or datetime.now().strftime('%Y 年 %m 月 %d 日')
+        signature_fields['日期：'] = filing_date
 
-        # === 勾选框自动填充 ===
-        content = self._fill_checkboxes(content, case, result)
+        section_fills.append({
+            'section': '签名区',
+            'fields': signature_fields,
+            'checkboxes': {},
+        })
 
-        # === 保存 ===
-        with open(doc_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        # === 对纠纷解决方式的意愿区 ===
+        checkbox_ops.append({
+            'section': '对纠纷解决方式的意愿',
+            'paragraph_contains': '是否了解调解作为非诉',
+            'before_checkbox': '了解',
+            'check': True,
+        })
+        checkbox_ops.append({
+            'section': '对纠纷解决方式的意愿',
+            'paragraph_contains': '是否考虑先行调解',
+            'before_checkbox': '是',
+            'check': True,
+        })
 
-        return result
+        return {
+            'section_fills': section_fills,
+            'checkbox_ops': checkbox_ops,
+        }
 
-    def _fill_checkboxes(self, content, case, result):
+    # ================================================================
+    # 区域内字段填充
+    # ================================================================
+    def _fill_section(self, sf: dict, section_map: dict):
         """
-        自动填充勾选框
-        核心逻辑：在XML中，☐是独立的<w:t>☐</w:t>元素
-        通过前后文本段落内容判断每个☐的归属，然后☐→☑
+        在指定区域内填充字段
+        sf: {"section": "原告_自然人", "fields": {"姓名：": "张三"}, "checkboxes": {"性别：男": True}}
         """
-        plaintiff_gender = case.plaintiffs[0].get('gender', '男') if case.plaintiffs else '男'
-        defendants = case.defendants_person
+        section_name = sf.get('section', '')
+        fields = sf.get('fields', {})
+        checkboxes = sf.get('checkboxes', {})
 
-        # 策略：用"段落文本"来定位每个☐，然后替换
-        # 先提取所有包含☐的段落及其上下文
-        import xml.etree.ElementTree as ET
-        ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+        ns = self.NAMESPACES
+        paragraphs = list(self.root.findall('.//w:p', ns))
 
-        try:
-            root = ET.fromstring(content)
-        except:
-            return content  # XML解析失败就不处理
+        # 查找区域
+        region = section_map.get(section_name)
+        if not region:
+            # 模糊匹配
+            for key in section_map:
+                if section_name in key or key in section_name:
+                    region = section_map[key]
+                    break
+        if not region:
+            return
 
-        # 构建替换映射：每个☐根据其段落上下文决定是否替换为☑
-        replacements_done = 0
+        start_idx, end_idx = region
+        region_paragraphs = paragraphs[start_idx:end_idx + 1]
 
-        for p in root.findall('.//w:p', ns):
-            texts = p.findall('.//w:t', ns)
-            full_text = ''.join([t.text for t in texts if t.text])
-
-            if '☐' not in full_text:
+        # 填充字段
+        for label, value in fields.items():
+            if not value:
                 continue
+            self._fill_field_in_region(region_paragraphs, label, str(value))
 
-            # 根据段落内容判断每个☐的归属
-            for t in texts:
-                if t.text != '☐':
+        # 处理勾选框
+        for context, should_check in checkboxes.items():
+            self._fill_checkbox_in_region(region_paragraphs, context, should_check)
+
+    def _fill_field_in_region(self, paragraphs: list, label: str, value: str):
+        """在区域内段落中填充字段"""
+        ns = self.NAMESPACES
+
+        # 收集所有匹配段落，优先填有空白位的（数据录入段 > 标题段）
+        matched = []
+        for p in paragraphs:
+            full_text = self._get_para_text(p)
+            if label not in full_text:
+                continue
+            # 判断是标题段还是数据录入段
+            # 数据录入段：标签后有空白（待填入值）
+            # 标题段：标签后无空白（如"3. 营养费"）
+            idx = full_text.index(label) + len(label)
+            after = full_text[idx:]
+            has_blank = bool(after.strip())  # 标签后有内容说明有空白位或单位
+            is_heading = not after.strip() or full_text.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.', '12.', '13.'))
+            priority = 0 if has_blank and not is_heading else 1
+            matched.append((priority, p, full_text))
+
+        if not matched:
+            return
+
+        # 按优先级排序，优先填数据录入段
+        matched.sort(key=lambda x: x[0])
+
+        for _, p, full_text in matched:
+            t_elems = p.findall('.//w:t', ns)
+
+            # 策略0：标签跨多个<w:t>（如"住所地（户籍所在地"+"）："）
+            # 拼接后能匹配，但单个<w:t>不包含完整标签
+            single_match = any(t.text and label in t.text for t in t_elems if t.text)
+            if not single_match and label in full_text:
+                # 找到标签结束位置对应的<w:t>元素
+                # 拼接前序文本，找到label结束的那个<w:t>
+                accumulated = ''
+                for t in t_elems:
+                    if not t.text:
+                        continue
+                    prev_accumulated = accumulated
+                    accumulated += t.text
+                    if label in accumulated:
+                        # label的结尾在这个<w:t>中
+                        label_end_in_full = full_text.index(label) + len(label)
+                        # 计算这个<w:t>中label结束后还剩多少
+                        label_start_in_accumulated = prev_accumulated.__len__()
+                        remaining_in_this_t = accumulated.__len__() - label_start_in_accumulated
+                        after_label = t.text[t.text.index(accumulated[label_start_in_accumulated:][:len(label) - max(0, len(label) - len(prev_accumulated))]):] if len(prev_accumulated) < len(label) else t.text[t.text.index(label[len(prev_accumulated):]) + len(label[len(prev_accumulated):]):]
+                        # 简化：直接在最后一个包含label部分的<w:t>末尾追加
+                        # 先找到label在full_text中的结束位置，然后定位到对应的<w:t>
+                        break
+
+                # 更简洁的策略：在标签结束的最后一个<w:t>后面追加新run
+                # 或者：找到最后一个包含label片段的<w:t>，在其文本末尾追加value
+                accumulated = ''
+                last_label_t = None
+                for t in t_elems:
+                    if not t.text:
+                        continue
+                    prev_len = len(accumulated)
+                    accumulated += t.text
+                    if full_text.index(label) + len(label) <= len(accumulated) and full_text.index(label) >= prev_len or (full_text.index(label) >= prev_len and full_text.index(label) < len(accumulated)):
+                        last_label_t = t
+                    if label in accumulated and len(accumulated) >= full_text.index(label) + len(label):
+                        last_label_t = t
+                        break
+
+                if last_label_t is not None:
+                    # 在这个<w:t>的文本后追加value
+                    last_label_t.text = last_label_t.text + value
+                    last_label_t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                    return
+
+            # 策略1：标签和值在同一个<w:t>中，标签后是空白
+            for t in t_elems:
+                if not t.text or label not in t.text:
                     continue
 
-                should_check = False  # 是否改为☑
+                idx = t.text.index(label) + len(label)
+                after = t.text[idx:]
 
-                # 获取此☐在段落文本中的位置
-                # 通过拼接前序文本判断
-                prefix = ''
-                for pt in texts:
-                    if pt is t:
+                # 标签后是空白或空的，直接追加
+                if not after.strip() or re.match(r'^[\s　]+$', after):
+                    t.text = t.text[:idx] + value
+                    t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                    return
+
+            # 策略2：标签在一个<w:t>，值要填在后续的空<w:t>中
+            runs = list(p.findall('w:r', ns))
+            label_run_idx = None
+
+            for ri, r in enumerate(runs):
+                for t in r.findall('w:t', ns):
+                    if t.text and label in t.text:
+                        label_run_idx = ri
                         break
-                    if pt.text:
-                        prefix += pt.text
+                if label_run_idx is not None:
+                    break
 
-                # === 判断规则 ===
+            if label_run_idx is not None:
+                # 找标签run后的空run
+                for next_r in runs[label_run_idx + 1:]:
+                    for t in next_r.findall('w:t', ns):
+                        if not t.text or not t.text.strip():
+                            t.text = value
+                            t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                            return
 
-                # 1. 原告性别：prefix含"性别：男 " → 男☑
-                if '性别：男 ' in prefix and prefix.count('性别') == 1:
-                    # 判断是第几个"性别：男"
-                    # 如果prefix中有"荆"或原告名，说明是原告区域
-                    if plaintiff_gender == '男':
-                        should_check = True
+                # 没有空run，在标签文本后追加
+                for t in runs[label_run_idx].findall('w:t', ns):
+                    if t.text and label in t.text:
+                        idx = t.text.index(label) + len(label)
+                        t.text = t.text[:idx] + value
+                        t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                        return
 
-                # 2. 被告1性别：prefix含"性别：男□    女 " → 女☐→☑
-                elif '女 ' in prefix[-20:] and '性别：' in prefix:
-                    if defendants and defendants[0].get('gender') == '女':
-                        should_check = True
+    def _fill_checkbox_in_region(self, paragraphs: list, context: str, should_check: bool):
+        """在区域内处理勾选框"""
+        ns = self.NAMESPACES
 
-                # 3. 被告2性别：第二个"性别：男 " + 被告2为男 → 男☑
-                elif '性别：男 ' in prefix and prefix.count('性别') >= 2:
-                    if defendants and len(defendants) > 1 and defendants[1].get('gender') == '男':
-                        should_check = True
+        # 收集匹配段落，优先匹配context在段首的（避免子串误匹配）
+        matched = []
+        for p in paragraphs:
+            full_text = self._get_para_text(p)
+            if context not in full_text:
+                continue
+            # 判断context是否在段首（更精确匹配）
+            at_start = full_text.strip().startswith(context)
+            matched.append((0 if at_start else 1, p, full_text))
 
-                # 4. 证据勾选："有 ☐" → 有☑
-                elif '有 ' in prefix[-10:]:
-                    should_check = True
+        if not matched:
+            return
 
-                # 5. 营养费无证据："无 ☐" → 无☑
-                elif '无 ' in prefix[-20:] and '病历资料' in prefix:
-                    should_check = True
+        matched.sort(key=lambda x: x[0])
 
-                # 6. 公司类型：有限责任公司☑
-                elif '有限责任公司 ' in prefix[-40:]:
-                    should_check = True
+        for _, p, full_text in matched:
 
-                # 7. 所有制：国有☑
-                elif '国有 ' in prefix[-10:] and '所有制' in prefix:
-                    should_check = True
+            t_elems = p.findall('.//w:t', ns)
 
-                # 8. 委托诉讼代理人：无☑
-                elif prefix.endswith('无 ') and '代理权限' in prefix:
-                    should_check = True
+            # 同一个<w:t>中 context + □
+            for t in t_elems:
+                if not t.text:
+                    continue
+                if context in t.text:
+                    after = t.text[t.text.index(context) + len(context):]
+                    if '□' in after or '☐' in t.text:
+                        if should_check:
+                            ctx_end = t.text.index(context) + len(context)
+                            before = t.text[:ctx_end]
+                            after_part = t.text[ctx_end:]
+                            after_part = after_part.replace('□', '☑', 1).replace('☐', '☑', 1)
+                            t.text = before + after_part
+                        return
 
-                # 9. 诉前保全：否☑
-                elif prefix.endswith('否 '):
-                    should_check = True
+            # context在一个<w:t>，□在后续<w:t>
+            context_found = False
+            for t in t_elems:
+                if not context_found:
+                    if t.text and context in t.text:
+                        context_found = True
+                    continue
+                # context已找到，找后续的□
+                if t.text and ('□' in t.text or '☐' in t.text):
+                    if should_check:
+                        t.text = t.text.replace('□', '☑', 1).replace('☐', '☑', 1)
+                    return
 
-                # 10. 鉴定申请：是☑
-                elif prefix.endswith('是 '):
-                    if case.injury_type in (CaseData.INJURY_DISABILITY, CaseData.INJURY_DEATH):
-                        should_check = True
+    # ================================================================
+    # 精确勾选框操作
+    # ================================================================
+    def _do_checkbox(self, cb: dict, section_map: dict):
+        """
+        精确勾选框操作
+        cb: {"section": "原告_自然人", "paragraph_contains": "性别", "before_checkbox": "男", "check": True}
+        
+        para_contains: 上下文线索，在区域内搜索时用来缩小范围。
+        如果勾选框所在段落不含para_contains，会向前查找附近段落是否包含。
+        """
+        section_name = cb.get('section', '')
+        para_contains = cb.get('paragraph_contains', '')
+        before_checkbox = cb.get('before_checkbox', '')
+        should_check = cb.get('check', True)
 
-                if should_check:
-                    t.text = '☑'
-                    replacements_done += 1
+        ns = self.NAMESPACES
+        paragraphs = list(self.root.findall('.//w:p', ns))
 
-        # 将修改后的XML写回
-        content = ET.tostring(root, encoding='unicode')
-        # 重新添加XML声明
-        content = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + content
+        # 确定搜索范围
+        search_paragraphs = paragraphs
+        if section_name:
+            region = section_map.get(section_name)
+            if region:
+                start_idx, end_idx = region
+                search_paragraphs = paragraphs[start_idx:end_idx + 1]
 
-        return content
+        # 策略：在区域内找 before_checkbox+□ 的段落
+        # para_contains作为上下文线索，在目标段落或其附近段落中出现即可
+        for idx, p in enumerate(search_paragraphs):
+            full_text = self._get_para_text(p)
+            
+            # 必须包含 before_checkbox + □/☐
+            target_text = before_checkbox + '□'
+            target_text2 = before_checkbox + '☐'
+            has_target = (target_text in full_text or target_text2 in full_text)
+            
+            # 或者 □ 紧跟在 before_checkbox 后面（跨<w:t>情况）
+            has_target_cross = False
+            if not has_target:
+                t_elems = p.findall('.//w:t', ns)
+                prev_text = ''
+                for t in t_elems:
+                    if t.text and ('□' in t.text or '☐' in t.text):
+                        combined = prev_text
+                        if combined.rstrip().endswith(before_checkbox):
+                            has_target_cross = True
+                            break
+                    if t.text:
+                        prev_text += t.text
+            
+            if not has_target and not has_target_cross:
+                continue
+            
+            # 如果指定了para_contains，验证上下文（当前段落或前3个段落中包含）
+            if para_contains:
+                context_found = para_contains in full_text
+                if not context_found:
+                    # 检查前面的段落
+                    for prev_idx in range(max(0, idx - 1), max(0, idx - 4), -1):
+                        prev_text = self._get_para_text(search_paragraphs[prev_idx])
+                        if para_contains in prev_text:
+                            context_found = True
+                            break
+                if not context_found:
+                    continue
+
+            t_elems = p.findall('.//w:t', ns)
+
+            # 策略1：before_checkbox + □/☐ 在同一个<w:t>
+            target1 = before_checkbox + '□'
+            target2 = before_checkbox + '☐'
+
+            for t in t_elems:
+                if not t.text:
+                    continue
+                if target1 in t.text:
+                    if should_check:
+                        t.text = t.text.replace(target1, before_checkbox + '☑', 1)
+                    return
+                if target2 in t.text:
+                    if should_check:
+                        t.text = t.text.replace(target2, before_checkbox + '☑', 1)
+                    return
+
+            # 策略2：before_checkbox在一个<w:t>末尾，□在下一个<w:t>
+            prev_text = ''
+            for t in t_elems:
+                if t.text and ('□' in t.text or '☐' in t.text):
+                    # 找到□的位置
+                    box_pos = t.text.find('□') if '□' in t.text else t.text.find('☐')
+                    combined = prev_text + t.text[:box_pos] if box_pos >= 0 else prev_text
+                    if combined.rstrip().endswith(before_checkbox):
+                        if should_check:
+                            t.text = t.text.replace('□', '☑', 1).replace('☐', '☑', 1)
+                        return
+                if t.text:
+                    prev_text += t.text
+
+
 
 
 # ============================================================
