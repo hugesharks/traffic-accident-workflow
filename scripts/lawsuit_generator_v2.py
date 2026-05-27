@@ -199,18 +199,31 @@ class CompensationCalculator:
             total += consumption * dep['share_ratio'] * dep['years']
         return total
 
-    def calc_insurance_split(self, total_loss, liability_type='全责'):
+    def calc_insurance_split(self, loss_detail, liability_type='全责'):
         """
-        交强险/商业险分项拆解
-        返回: {compulsory, commercial, self_bear}
+        交强险/商业险分项拆解（严格按分项限额）
+        
+        loss_detail: 分项损失明细，格式：
+            {
+                'medical': 医疗费+住院伙食补助费+营养费,
+                'death_disability': 死亡/残疾赔偿金+误工费+护理费+交通费+丧葬费+精神抚慰金+被扶养人生活费+辅助器具费,
+                'property': 财产损失+其他财产性费用
+            }
+        liability_type: 被告（侵权方）的责任类型，全责/主责/同责/次责/无责
+        
+        返回: {compulsory, commercial, self_bear, compulsory_detail, total_insurance}
         """
         ratio = HEBEI_STANDARD['liability_ratio'].get(liability_type, 1.0)
-        compulsory_limits = HEBEI_STANDARD['compulsory_insurance']
+        limits = HEBEI_STANDARD['compulsory_insurance']
 
-        # 交强险在限额内全额赔付（不分责任比例）
-        compulsory = min(total_loss, compulsory_limits['medical'] + compulsory_limits['death_disability'] + compulsory_limits['property'])
+        # 交强险严格按分项限额赔付（不分责任比例）
+        comp_medical = min(loss_detail.get('medical', 0), limits['medical'])
+        comp_death_dis = min(loss_detail.get('death_disability', 0), limits['death_disability'])
+        comp_property = min(loss_detail.get('property', 0), limits['property'])
+        compulsory = comp_medical + comp_death_dis + comp_property
 
-        # 剩余部分按责任比例由商业险赔付
+        # 剩余部分按被告责任比例由商业险赔付
+        total_loss = loss_detail.get('medical', 0) + loss_detail.get('death_disability', 0) + loss_detail.get('property', 0)
         remaining = total_loss - compulsory
         commercial = remaining * ratio
         self_bear = remaining * (1 - ratio)
@@ -220,6 +233,11 @@ class CompensationCalculator:
             'commercial': commercial,
             'self_bear': self_bear,
             'total_insurance': compulsory + commercial,
+            'compulsory_detail': {
+                'medical': comp_medical,
+                'death_disability': comp_death_dis,
+                'property': comp_property,
+            },
         }
 
 
@@ -237,6 +255,7 @@ class CaseData:
     INJURY_DEATH = 'death'          # 死亡
     INJURY_DISABILITY = 'disability'  # 伤残
     INJURY_PROPERTY = 'property'     # 仅车损/财产损失
+    INJURY_PROPERTY_PERSONAL = 'property_personal'  # 车损+人身伤害（无伤残）
 
     def __init__(self):
         # 案件类型
@@ -253,8 +272,8 @@ class CaseData:
         self.defendants_company = []  # [{name, address, legal_person, position, phone, credit_code, type}]
         self.agents = []  # [{name, unit, position, phone, authority}]
 
-        # 责任
-        self.liability_type = '全责'  # 全责/主责/同责/次责/无责
+        # 责任（指被告/侵权方的责任类型）
+        self.liability_type = '全责'  # 被告责任：全责/主责/同责/次责/无责（指被告对事故承担的责任比例）
         self.liability_detail = ''    # 责任认定书编号及内容
 
         # 事故信息
@@ -353,6 +372,7 @@ class CaseData:
             result['funeral_fee'] = 0
             result['assistive_device_fee'] = self.assistive_device_fee
         else:
+            # 仅财产损失 或 车损+人身伤害（无伤残）
             result['disability_compensation'] = 0
             result['death_compensation'] = 0
             result['funeral_fee'] = 0
@@ -393,9 +413,22 @@ class CaseData:
             result['other_fee']
         )
 
-        # 保险拆分
+        # 保险拆分（按分项限额严格拆解）
+        # 医疗费分项：医疗费+住院伙食补助费+营养费
+        loss_medical = result['medical_fee'] + result['hospital_meal_fee'] + result['nutrition_fee']
+        # 死亡伤残分项：残疾/死亡赔偿金+误工费+护理费+交通费+丧葬费+精神抚慰金+被扶养人生活费+辅助器具费
+        loss_death_disability = (
+            result['disability_compensation'] + result['death_compensation'] +
+            result['lost_wage'] + result['nursing_fee'] + result['traffic_fee'] +
+            result['funeral_fee'] + result['mental_damage_fee'] +
+            result['dependent_living'] + result['assistive_device_fee']
+        )
+        # 财产损失分项：财产损失+其他费用（其他费用按财产性质处理）
+        loss_property = result['property_damage'] + result['other_fee']
+
         result['insurance_split'] = calc.calc_insurance_split(
-            result['total_amount'], self.liability_type
+            {'medical': loss_medical, 'death_disability': loss_death_disability, 'property': loss_property},
+            self.liability_type
         )
 
         return result
@@ -668,8 +701,8 @@ def generate_compensation_report(case: CaseData, result: dict) -> str:
         '',
         f'**赔偿标准**：河北省{case.standard_year}年标准（{"城镇" if case.region == "urban" else "农村"}）',
         f'**案件类型**：{"刑事附带民事" if case.case_type == CaseData.CASE_TYPE_CRIMINAL_ATTACHED else "纯民事"}',
-        f'**伤情类型**：{"死亡" if case.injury_type == CaseData.INJURY_DEATH else "伤残" if case.injury_type == CaseData.INJURY_DISABILITY else "仅财产损失"}',
-        f'**责任比例**：{case.liability_type}（{HEBEI_STANDARD["liability_ratio"].get(case.liability_type, 1.0)*100:.0f}%）',
+        f'**伤情类型**：{"死亡" if case.injury_type == CaseData.INJURY_DEATH else "伤残" if case.injury_type == CaseData.INJURY_DISABILITY else "车损+人身伤害" if case.injury_type == CaseData.INJURY_PROPERTY_PERSONAL else "仅财产损失"}',
+        f'**责任比例**：被告{case.liability_type}（{HEBEI_STANDARD["liability_ratio"].get(case.liability_type, 1.0)*100:.0f}%）',
         '',
         '## 赔偿项目明细',
         '',
@@ -680,7 +713,7 @@ def generate_compensation_report(case: CaseData, result: dict) -> str:
     items = [
         ('1', '医疗费', result['medical_fee'], '按实际票据'),
         ('2', '护理费', result['nursing_fee'], f'{case.nursing_days or case.hospital_days}天×{case.nursing_persons}人×{case.nursing_custom_daily or HEBEI_STANDARD["nursing"]}元/天'),
-        ('3', '营养费', result['nutrition_fee'], f'{case.nutrition_days or case.hospital_days}天×{HEBEI_STANDARD["nutrition"]}元/天'),
+        ('3', '营养费', result['nutrition_fee'], f'{case.nutrition_days or case.hospital_days}天×{case.nutrition_daily or HEBEI_STANDARD["nutrition"]}元/天'),
         ('4', '住院伙食补助费', result['hospital_meal_fee'], f'{case.hospital_days}天×{HEBEI_STANDARD["hospital_meal"]}元/天'),
         ('5', '误工费', result['lost_wage'], f'{case.lost_work_days or case.hospital_days}天×{case.lost_work_daily or HEBEI_STANDARD["default_wage"]}元/天'),
         ('6', '交通费', result['traffic_fee'], '按实际票据'),
@@ -718,8 +751,19 @@ def generate_compensation_report(case: CaseData, result: dict) -> str:
         '',
         '| 项目 | 金额(元) |',
         '|------|----------|',
-        f'| 交强险 | {ins["compulsory"]:,.2f} |',
-        f'| 商业三者险（{case.liability_type}{HEBEI_STANDARD["liability_ratio"].get(case.liability_type, 1.0)*100:.0f}%） | {ins["commercial"]:,.2f} |',
+        f'| 交强险合计 | {ins["compulsory"]:,.2f} |',
+    ])
+    # 分项明细
+    if 'compulsory_detail' in ins:
+        cd = ins['compulsory_detail']
+        if cd['medical'] > 0:
+            lines.append(f'| └ 医疗费用限额（18,000） | {cd["medical"]:,.2f} |')
+        if cd['death_disability'] > 0:
+            lines.append(f'| └ 死亡伤残限额（180,000） | {cd["death_disability"]:,.2f} |')
+        if cd['property'] > 0:
+            lines.append(f'| └ 财产损失限额（2,000） | {cd["property"]:,.2f} |')
+    lines.extend([
+        f'| 商业三者险（被告{case.liability_type}{HEBEI_STANDARD["liability_ratio"].get(case.liability_type, 1.0)*100:.0f}%） | {ins["commercial"]:,.2f} |',
         f'| 原告自行承担（{(1-HEBEI_STANDARD["liability_ratio"].get(case.liability_type, 1.0))*100:.0f}%） | {ins["self_bear"]:,.2f} |',
         f'| **保险公司合计** | **{ins["total_insurance"]:,.2f}** |',
     ])
@@ -738,7 +782,7 @@ def generate_compensation_report(case: CaseData, result: dict) -> str:
         lines.append('- 死亡赔偿金按20年计算，60岁以上每增1岁减1年，最低5年')
 
     if case.liability_type != '全责':
-        lines.append(f'- 被告负{case.liability_type}，商业险部分按{HEBEI_STANDARD["liability_ratio"].get(case.liability_type, 1.0)*100:.0f}%比例赔付')
+        lines.append(f'- 被告负{case.liability_type}，商业险部分按被告{HEBEI_STANDARD["liability_ratio"].get(case.liability_type, 1.0)*100:.0f}%比例赔付')
 
     return '\n'.join(lines)
 
