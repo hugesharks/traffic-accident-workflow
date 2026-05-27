@@ -470,24 +470,85 @@ class LawsuitGenerator:
         # 1. 计算赔偿结果
         result = case.calculate()
 
-        # 2. 构建区域索引
+        # 2. 按需复制当事人区块（多原告/多被告场景）
+        self._duplicate_sections(case)
+
+        # 3. 重新解析（复制后XML已变）
+        doc_path = os.path.join(self.unpacked_dir, 'word/document.xml')
+        self.root = ET.parse(doc_path).getroot()
+
+        # 4. 构建区域索引
         section_map = self._build_section_map()
 
-        # 3. 构建填充数据
+        # 5. 构建填充数据
         fill_data = self._build_fill_data(case, result)
 
-        # 4. 区域内字段填充
+        # 6. 区域内字段填充
         for sf in fill_data.get('section_fills', []):
             self._fill_section(sf, section_map)
 
-        # 5. 勾选框处理
+        # 7. 勾选框处理
         for cb in fill_data.get('checkbox_ops', []):
             self._do_checkbox(cb, section_map)
 
-        # 6. 保存输出
+        # 8. 保存输出
         output = self._save_and_pack(output_filename)
         self._cleanup()
         return output, result
+
+    def _duplicate_sections(self, case: CaseData):
+        """
+        按需复制当事人区块，使模板能容纳多个原告/被告/代理人
+        法〔2025〕82号要素式模板结构：每个当事人占一个表格行(<w:tr>)
+        复制策略：找到包含该当事人标记的表格行，在其后插入复制的行
+        """
+        ns = self.NAMESPACES
+
+        # 计算需要几个区块
+        needed = {
+            '被告（自然人）': len(case.defendants_person) if case.defendants_person else 1,
+            '被告（法人、非法人组织）': len(case.defendants_company) if case.defendants_company else 1,
+            '原告（自然人）': len(case.plaintiffs) if case.plaintiffs else 1,
+            '委托诉讼代理人': len(case.agents) if case.agents else 1,
+        }
+
+        # 找到包含当事人标记的表格行
+        def _find_row_containing(text_marker):
+            """找到包含指定文本的表格行"""
+            for tbl in self.root.findall('.//w:tbl', ns):
+                for row in tbl.findall('w:tr', ns):
+                    row_text = ''.join([t.text for p in row.findall('.//w:p', ns)
+                                       for t in p.findall('.//w:t', ns) if t.text])
+                    if text_marker in row_text:
+                        return row, tbl
+            return None, None
+
+        # 按从后往前的顺序处理（避免行号偏移）
+        dup_tasks = []
+        for marker, count in needed.items():
+            if count > 1:
+                dup_tasks.append((marker, count))
+
+        # 倒序处理（后面的行先复制，避免索引偏移）
+        dup_tasks.reverse()
+
+        for marker, count in dup_tasks:
+            source_row, tbl = _find_row_containing(marker)
+            if source_row is None or tbl is None:
+                continue
+
+            rows = list(tbl.findall('w:tr', ns))
+            source_idx = rows.index(source_row)
+
+            for copy_num in range(1, count):
+                new_row = deepcopy(source_row)
+                tbl.insert(source_idx + copy_num, new_row)
+
+        # 保存修改后的XML
+        doc_path = os.path.join(self.unpacked_dir, 'word/document.xml')
+        xml_str = ET.tostring(self.root, encoding='unicode')
+        with open(doc_path, 'w', encoding='utf-8') as f:
+            f.write(self._xml_decl + xml_str)
 
     # ================================================================
     # XML 解析与保存
@@ -552,8 +613,9 @@ class LawsuitGenerator:
     # ================================================================
     def _build_section_map(self) -> dict:
         """
-        构建段落区域索引
-        返回: {"原告_自然人": (start_idx, end_idx), "被告_法人": ..., ...}
+        构建段落区域索引（支持同名多实例）
+        返回: {"原告_自然人_1": (start_idx, end_idx), "被告_法人_1": ..., "被告_自然人_2": ..., ...}
+        同类型区域按出现顺序编号，单实例也带编号，保证key唯一
         """
         ns = self.NAMESPACES
         paragraphs = list(self.root.findall('.//w:p', ns))
@@ -570,7 +632,8 @@ class LawsuitGenerator:
             '对纠纷解决方式的意愿': '对纠纷解决方式的意愿',
         }
 
-        section_map = {}
+        # 第一轮：收集所有区域（可能有同名覆盖）
+        raw_sections = []  # [(section_name, start_idx, end_idx), ...]
         current_section = None
         section_start = None
 
@@ -604,23 +667,51 @@ class LawsuitGenerator:
             if new_section:
                 # 保存前一个区域
                 if current_section and section_start is not None:
-                    section_map[current_section] = (section_start, i)
+                    raw_sections.append((current_section, section_start, i))
                 current_section = new_section
                 section_start = i
 
         # 最后一个区域
         if current_section and section_start is not None:
-            section_map[current_section] = (section_start, len(paragraphs))
+            raw_sections.append((current_section, section_start, len(paragraphs)))
 
-        # 后处理：无子类型的当事人自动加_自然人
-        sections_to_rename = {}
-        for section_name in list(section_map.keys()):
-            if section_name in PERSON_MARKERS:
-                has_subtype = any(s.startswith(section_name + '_') for s in section_map)
-                if not has_subtype:
-                    sections_to_rename[section_name] = f'{section_name}_自然人'
-        for old_name, new_name in sections_to_rename.items():
-            section_map[new_name] = section_map.pop(old_name)
+        # 后处理1：无子类型的当事人自动加_自然人
+        # 检查：某个当事人标记后面是否紧跟了子类型行
+        person_with_subtype = set()
+        for idx, (name, _, end) in enumerate(raw_sections):
+            if name in PERSON_MARKERS:
+                # 检查紧邻的下一个区域是否是该当事人的子类型
+                if idx + 1 < len(raw_sections):
+                    next_name = raw_sections[idx + 1][0]
+                    if next_name.startswith(name + '_'):
+                        person_with_subtype.add(idx)
+
+        # 重命名无子类型的当事人标记
+        for idx in range(len(raw_sections)):
+            name = raw_sections[idx][0]
+            if name in PERSON_MARKERS and idx not in person_with_subtype:
+                raw_sections[idx] = (f'{name}_自然人', raw_sections[idx][1], raw_sections[idx][2])
+
+        # 后处理2：同名区域按出现顺序编号
+        # 同时删除当事人标记自身的行（只有子类型行保留）
+        # 即：如果存在"原告_自然人"，则删除纯"原告"行
+        has_subtypes = {name.split('_')[0] for name, _, _ in raw_sections
+                       if '_' in name and name.split('_')[0] in PERSON_MARKERS}
+        filtered_sections = []
+        for name, start, end in raw_sections:
+            if name in has_subtypes:
+                continue  # 跳过纯当事人标记行（已有子类型行替代）
+            filtered_sections.append((name, start, end))
+
+        # 编号
+        section_map = {}
+        counter = {}  # section_name -> 当前编号
+        for name, start, end in filtered_sections:
+            if name not in counter:
+                counter[name] = 1
+            numbered_name = f'{name}_{counter[name]}'
+            section_map[numbered_name] = (start, end)
+            counter[name] += 1
 
         return section_map
 
@@ -632,17 +723,29 @@ class LawsuitGenerator:
         section_fills = []
         checkbox_ops = []
 
-        # === 原告_自然人 ===
-        if case.plaintiffs:
-            p = case.plaintiffs[0]
+        # === 原告_自然人（支持多个） ===
+        for idx, p in enumerate(case.plaintiffs or []):
             fields = {}
             checkboxes = {}
 
             if p.get('name'):
                 fields['姓名：'] = p['name']
             if p.get('gender'):
-                checkboxes['性别：男'] = (p['gender'] == '男')
-                checkboxes['性别：女'] = (p['gender'] == '女')
+                # 性别互斥勾选：用checkbox_ops精确控制
+                if p['gender'] == '男':
+                    checkbox_ops.append({
+                        'section': f'原告_自然人_{idx + 1}',
+                        'paragraph_contains': '性别',
+                        'before_checkbox': '男',
+                        'check': True,
+                    })
+                elif p['gender'] == '女':
+                    checkbox_ops.append({
+                        'section': f'原告_自然人_{idx + 1}',
+                        'paragraph_contains': '性别',
+                        'before_checkbox': '女',
+                        'check': True,
+                    })
             if p.get('birthdate'):
                 fields['出生日期：'] = p['birthdate']
             if p.get('ethnicity'):
@@ -661,22 +764,33 @@ class LawsuitGenerator:
                 fields['证件号码：'] = p['id_number']
 
             section_fills.append({
-                'section': '原告_自然人',
+                'section': f'原告_自然人_{idx + 1}',
                 'fields': fields,
                 'checkboxes': checkboxes,
             })
 
-        # === 被告_自然人 ===
-        if case.defendants_person:
-            d = case.defendants_person[0]
+        # === 被告_自然人（支持多个） ===
+        for idx, d in enumerate(case.defendants_person or []):
             fields = {}
             checkboxes = {}
 
             if d.get('name'):
                 fields['姓名：'] = d['name']
             if d.get('gender'):
-                checkboxes['性别：男'] = (d['gender'] == '男')
-                checkboxes['性别：女'] = (d['gender'] == '女')
+                if d['gender'] == '男':
+                    checkbox_ops.append({
+                        'section': f'被告_自然人_{idx + 1}',
+                        'paragraph_contains': '性别',
+                        'before_checkbox': '男',
+                        'check': True,
+                    })
+                elif d['gender'] == '女':
+                    checkbox_ops.append({
+                        'section': f'被告_自然人_{idx + 1}',
+                        'paragraph_contains': '性别',
+                        'before_checkbox': '女',
+                        'check': True,
+                    })
             if d.get('birthdate'):
                 fields['出生日期：'] = d['birthdate']
             if d.get('address'):
@@ -687,14 +801,13 @@ class LawsuitGenerator:
                 fields['联系电话：'] = d['phone']
 
             section_fills.append({
-                'section': '被告_自然人',
+                'section': f'被告_自然人_{idx + 1}',
                 'fields': fields,
                 'checkboxes': checkboxes,
             })
 
-        # === 被告_法人 ===
-        if case.defendants_company:
-            c = case.defendants_company[0]
+        # === 被告_法人（支持多个） ===
+        for idx, c in enumerate(case.defendants_company or []):
             fields = {}
             checkboxes = {}
 
@@ -728,40 +841,40 @@ class LawsuitGenerator:
                     checkboxes[own_map[ownership]] = True
 
             section_fills.append({
-                'section': '被告_法人',
+                'section': f'被告_法人_{idx + 1}',
                 'fields': fields,
                 'checkboxes': checkboxes,
             })
 
-        # === 委托诉讼代理人 ===
+        # === 委托诉讼代理人（支持多个） ===
         if case.agents:
-            a = case.agents[0]
-            agent_fields = {}
-            agent_checkboxes = {'有': True}
+            for idx, a in enumerate(case.agents):
+                agent_fields = {}
+                agent_checkboxes = {'有': True}
 
-            if a.get('name'):
-                agent_fields['姓名：'] = a['name']
-            if a.get('unit'):
-                agent_fields['单位：'] = a['unit']
-            if a.get('position'):
-                agent_fields['职务：'] = a['position']
-            if a.get('phone'):
-                agent_fields['联系电话：'] = a['phone']
-            authority = a.get('authority', '')
-            if authority == '特别授权':
-                agent_checkboxes['特别授权'] = True
-            elif authority == '一般授权':
-                agent_checkboxes['一般授权'] = True
+                if a.get('name'):
+                    agent_fields['姓名：'] = a['name']
+                if a.get('unit'):
+                    agent_fields['单位：'] = a['unit']
+                if a.get('position'):
+                    agent_fields['职务：'] = a['position']
+                if a.get('phone'):
+                    agent_fields['联系电话：'] = a['phone']
+                authority = a.get('authority', '')
+                if authority == '特别授权':
+                    agent_checkboxes['特别授权'] = True
+                elif authority == '一般授权':
+                    agent_checkboxes['一般授权'] = True
 
-            section_fills.append({
-                'section': '委托诉讼代理人',
-                'fields': agent_fields,
-                'checkboxes': agent_checkboxes,
-            })
+                section_fills.append({
+                    'section': f'委托诉讼代理人_{idx + 1}',
+                    'fields': agent_fields,
+                    'checkboxes': agent_checkboxes,
+                })
         else:
             # 无代理人
             section_fills.append({
-                'section': '委托诉讼代理人',
+                'section': '委托诉讼代理人_1',
                 'fields': {},
                 'checkboxes': {'有': False, '无': True},
             })
@@ -833,20 +946,20 @@ class LawsuitGenerator:
         request_fields['标的总额'] = f'{result["total_amount"]:.2f}'
 
         section_fills.append({
-            'section': '诉讼请求',
+            'section': '诉讼请求_1',
             'fields': request_fields,
             'checkboxes': request_checkboxes,
         })
 
         # === 诉前保全及鉴定申请区 ===
         checkbox_ops.append({
-            'section': '诉前保全及鉴定申请',
+            'section': '诉前保全及鉴定申请_1',
             'paragraph_contains': '诉前保全',
             'before_checkbox': '否',
             'check': True,
         })
         checkbox_ops.append({
-            'section': '诉前保全及鉴定申请',
+            'section': '诉前保全及鉴定申请_1',
             'paragraph_contains': '鉴定',
             'before_checkbox': '是',
             'check': case.injury_type in (CaseData.INJURY_DISABILITY, CaseData.INJURY_DEATH),
@@ -873,7 +986,7 @@ class LawsuitGenerator:
             fact_fields['5. 证据清单'] = '；'.join(evidence_items) + '。'
 
         section_fills.append({
-            'section': '事实与理由',
+            'section': '事实与理由_1',
             'fields': fact_fields,
             'checkboxes': {},
         })
@@ -886,20 +999,20 @@ class LawsuitGenerator:
         signature_fields['日期：'] = filing_date
 
         section_fills.append({
-            'section': '签名区',
+            'section': '签名区_1',
             'fields': signature_fields,
             'checkboxes': {},
         })
 
         # === 对纠纷解决方式的意愿区 ===
         checkbox_ops.append({
-            'section': '对纠纷解决方式的意愿',
+            'section': '对纠纷解决方式的意愿_1',
             'paragraph_contains': '是否了解调解作为非诉',
             'before_checkbox': '了解',
             'check': True,
         })
         checkbox_ops.append({
-            'section': '对纠纷解决方式的意愿',
+            'section': '对纠纷解决方式的意愿_1',
             'paragraph_contains': '是否考虑先行调解',
             'before_checkbox': '是',
             'check': True,
@@ -925,11 +1038,16 @@ class LawsuitGenerator:
         ns = self.NAMESPACES
         paragraphs = list(self.root.findall('.//w:p', ns))
 
-        # 查找区域
+        # 查找区域（支持编号key，如"原告_自然人"匹配"原告_自然人_1"）
         region = section_map.get(section_name)
         if not region:
-            # 模糊匹配
+            # 精确匹配带编号的key
             for key in section_map:
+                # "原告_自然人" 匹配 "原告_自然人_1"
+                if key.startswith(section_name + '_') or section_name.startswith(key + '_'):
+                    region = section_map[key]
+                    break
+                # 兜底：包含匹配
                 if section_name in key or key in section_name:
                     region = section_map[key]
                     break
