@@ -1110,6 +1110,36 @@ class LawsuitGenerator:
 
         matched.sort(key=lambda x: x[0])
         _, p, full_text = matched[0]
+        
+        # === 特殊处理：标题+空段落模式 ===
+        # 如"1. 交通事故发生情况"标题后跟空段落，应填入空段落而非标题
+        p_idx = None
+        for pi, pp in enumerate(paragraphs):
+            if pp is p:
+                p_idx = pi
+                break
+        
+        if p_idx is not None and p_idx + 1 < len(paragraphs):
+            next_p = paragraphs[p_idx + 1]
+            next_text = self._get_para_text(next_p).strip()
+            if not next_text:
+                # 下一段是空段落，将内容填入空段落
+                next_t_elems = list(next_p.findall('.//w:t', ns))
+                if next_t_elems:
+                    next_t_elems[0].text = value
+                    next_t_elems[0].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                    for t in next_t_elems[1:]:
+                        if not (t.text and t.text.strip()):
+                            t.text = ''
+                else:
+                    # 空段落没有<w:t>，创建一个
+                    from xml.etree.ElementTree import SubElement as _Sub
+                    r = _Sub(next_p, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}r')
+                    t_new = _Sub(r, '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t')
+                    t_new.text = value
+                    t_new.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+                return  # 填入空段落后直接返回
+
         t_elems = list(p.findall('.//w:t', ns))
 
         # 构建字符偏移映射
