@@ -729,7 +729,7 @@ class LawsuitGenerator:
             checkboxes = {}
 
             if p.get('name'):
-                fields['姓名：'] = p['name']
+                fields['姓名：'] = ' ' + p['name']
             if p.get('gender'):
                 # 性别互斥勾选：用checkbox_ops精确控制
                 if p['gender'] == '男':
@@ -747,7 +747,7 @@ class LawsuitGenerator:
                         'check': True,
                     })
             if p.get('birthdate'):
-                fields['出生日期：'] = p['birthdate']
+                fields['出生日期：'] = ' ' + p['birthdate']
             if p.get('ethnicity'):
                 fields['民族：'] = p['ethnicity']
             if p.get('work'):
@@ -755,13 +755,13 @@ class LawsuitGenerator:
             if p.get('position'):
                 fields['职务：'] = p['position']
             if p.get('phone'):
-                fields['联系电话：'] = p['phone']
+                fields['联系电话：'] = ' ' + p['phone']
             if p.get('address'):
-                fields['住所地（户籍所在地）：'] = p['address']
+                fields['住所地（户籍所在地）：'] = ' ' + p['address']
             if p.get('residence'):
                 fields['经常居住地：'] = p['residence']
             if p.get('id_number'):
-                fields['证件号码：'] = p['id_number']
+                fields['证件号码：'] = ' ' + p['id_number']
 
             section_fills.append({
                 'section': f'原告_自然人_{idx + 1}',
@@ -775,7 +775,7 @@ class LawsuitGenerator:
             checkboxes = {}
 
             if d.get('name'):
-                fields['姓名：'] = d['name']
+                fields['姓名：'] = ' ' + d['name']
             if d.get('gender'):
                 if d['gender'] == '男':
                     checkbox_ops.append({
@@ -794,11 +794,11 @@ class LawsuitGenerator:
             if d.get('birthdate'):
                 fields['出生日期：'] = d['birthdate']
             if d.get('address'):
-                fields['住所地（户籍所在地）：'] = d['address']
+                fields['住所地（户籍所在地）：'] = ' ' + d['address']
             if d.get('id_number'):
-                fields['证件号码：'] = d['id_number']
+                fields['证件号码：'] = ' ' + d['id_number']
             if d.get('phone'):
-                fields['联系电话：'] = d['phone']
+                fields['联系电话：'] = ' ' + d['phone']
 
             section_fills.append({
                 'section': f'被告_自然人_{idx + 1}',
@@ -812,9 +812,9 @@ class LawsuitGenerator:
             checkboxes = {}
 
             if c.get('name'):
-                fields['名称：'] = c['name']
+                fields['名称：'] = ' ' + c['name']
             if c.get('address'):
-                fields['住所地（主要办事机构所在地）：'] = c['address']
+                fields['住所地（主要办事机构所在地）：'] = ' ' + c['address']
             if c.get('legal_person'):
                 fields['法定代表人 / 负责人：'] = c['legal_person']
             if c.get('position'):
@@ -822,7 +822,7 @@ class LawsuitGenerator:
             if c.get('phone'):
                 fields['联系电话：'] = c['phone']
             if c.get('credit_code'):
-                fields['统一社会信用代码：'] = c['credit_code']
+                fields['统一社会信用代码：'] = ' ' + c['credit_code']
             # 公司类型勾选
             company_type = c.get('type', '')
             if company_type:
@@ -885,65 +885,65 @@ class LawsuitGenerator:
 
         # 1. 医疗费
         if result.get('medical_fee', 0) > 0:
-            request_fields['累计发生医疗费'] = f'{result["medical_fee"]:.2f}'
+            request_fields['累计发生医疗费'] = f' {result["medical_fee"]:.2f} 元'
             if case.hospital_name:
-                request_fields['医院住院（门'] = case.hospital_name
+                request_fields['医院住院（门'] = f' {case.hospital_name}'
             request_checkboxes['医疗费发票、医疗费清单、病历资料：有'] = True
 
         # 2. 护理费
         if result.get('nursing_fee', 0) > 0:
             nursing_days = case.nursing_days or case.hospital_days
-            request_fields['住院护理'] = f'{nursing_days}'
-            request_fields['支付护理费'] = f'{result["nursing_fee"]:.2f}'
+            request_fields['住院护理'] = f' {nursing_days} 天'
+            request_fields['支付护理费'] = f' {result["nursing_fee"]:.2f} 元'
             request_checkboxes['住院证明、医嘱等：有'] = True
 
         # 3. 营养费
         if result.get('nutrition_fee', 0) > 0:
-            request_fields['营养费'] = f'{result["nutrition_fee"]:.2f}'
+            request_fields['营养费'] = f' {result["nutrition_fee"]:.2f} 元'
             request_checkboxes['病历资料：有'] = (result['nutrition_fee'] > 0)
 
         # 4. 住院伙食补助费
         if result.get('hospital_meal_fee', 0) > 0:
-            request_fields['住院伙食补助费'] = f'{result["hospital_meal_fee"]:.2f}'
+            request_fields['住院伙食补助费'] = f' {result["hospital_meal_fee"]:.2f} 元'
 
         # 5. 误工费
         if result.get('lost_wage', 0) > 0:
-            request_fields['误工费'] = f'{result["lost_wage"]:.2f}'
+            request_fields['误工费'] = f' {result["lost_wage"]:.2f} 元'
 
         # 6. 交通费
         if result.get('traffic_fee', 0) > 0:
-            request_fields['交通费'] = f'{result["traffic_fee"]:.2f}'
+            request_fields['交通费'] = f' {result["traffic_fee"]:.2f} 元'
             request_checkboxes['交通费凭证：有'] = True
 
         # 7. 残疾赔偿金
         if case.injury_type == CaseData.INJURY_DISABILITY and result.get('disability_compensation', 0) > 0:
-            request_fields['残疾赔偿金'] = f'{result["disability_compensation"]:.2f}'
+            request_fields['残疾赔偿金'] = f' {result["disability_compensation"]:.2f} 元'
             if result.get('dependent_living', 0) > 0:
-                request_fields['被扶养人生活费'] = f'{result["dependent_living"]:.2f}'
+                request_fields['被扶养人生活费'] = f' {result["dependent_living"]:.2f} 元'
 
         # 8. 残疾辅助器具费
         if result.get('assistive_device_fee', 0) > 0:
-            request_fields['残疾辅助器具费'] = f'{result["assistive_device_fee"]:.2f}'
+            request_fields['残疾辅助器具费'] = f' {result["assistive_device_fee"]:.2f} 元'
 
         # 9. 死亡赔偿金、丧葬费
         if case.injury_type == CaseData.INJURY_DEATH:
             if result.get('death_compensation', 0) > 0:
-                request_fields['死亡赔偿金'] = f'{result["death_compensation"]:.2f}'
+                request_fields['死亡赔偿金'] = f' {result["death_compensation"]:.2f} 元'
             if result.get('funeral_fee', 0) > 0:
-                request_fields['丧葬费'] = f'{result["funeral_fee"]:.2f}'
+                request_fields['丧葬费'] = f' {result["funeral_fee"]:.2f} 元'
 
         # 10. 精神损害抚慰金
         if result.get('mental_damage_fee', 0) > 0:
-            request_fields['精神损害抚慰金'] = f'{result["mental_damage_fee"]:.2f}'
+            request_fields['精神损害抚慰金'] = f' {result["mental_damage_fee"]:.2f} 元'
 
         # 11. 财产损失
         if result.get('property_damage', 0) > 0:
-            request_fields['车辆损失：'] = f'{result["property_damage"]:.2f}元'
+            request_fields['车辆损失：'] = f' {result["property_damage"]:.2f} 元'
         if case.other_fee_desc and result.get('other_fee', 0) > 0:
-            request_fields['其他损失：'] = f'{case.other_fee_desc}{result["other_fee"]:.2f}元'
+            request_fields['其他损失：'] = f' {case.other_fee_desc}{result["other_fee"]:.2f} 元'
 
         # 13. 标的总额
-        request_fields['标的总额'] = f'{result["total_amount"]:.2f}'
+        request_fields['标的总额'] = f' {result["total_amount"]:.2f} 元'
 
         section_fills.append({
             'section': '诉讼请求_1',
@@ -994,7 +994,7 @@ class LawsuitGenerator:
         # === 签名区 ===
         signature_fields = {}
         if case.plaintiffs:
-            signature_fields['具状人（签字、盖章）：'] = case.plaintiffs[0].get('name', '')
+            signature_fields['具状人（签字、盖章）：'] = ' ' + case.plaintiffs[0].get('name', '')
         filing_date = case.filing_date or datetime.now().strftime('%Y 年 %m 月 %d 日')
         signature_fields['日期：'] = filing_date
 
@@ -1027,10 +1027,7 @@ class LawsuitGenerator:
     # 区域内字段填充
     # ================================================================
     def _fill_section(self, sf: dict, section_map: dict):
-        """
-        在指定区域内填充字段
-        sf: {"section": "原告_自然人", "fields": {"姓名：": "张三"}, "checkboxes": {"性别：男": True}}
-        """
+        """在指定区域内填充字段"""
         section_name = sf.get('section', '')
         fields = sf.get('fields', {})
         checkboxes = sf.get('checkboxes', {})
@@ -1038,16 +1035,13 @@ class LawsuitGenerator:
         ns = self.NAMESPACES
         paragraphs = list(self.root.findall('.//w:p', ns))
 
-        # 查找区域（支持编号key，如"原告_自然人"匹配"原告_自然人_1"）
+        # 查找区域
         region = section_map.get(section_name)
         if not region:
-            # 精确匹配带编号的key
             for key in section_map:
-                # "原告_自然人" 匹配 "原告_自然人_1"
                 if key.startswith(section_name + '_') or section_name.startswith(key + '_'):
                     region = section_map[key]
                     break
-                # 兜底：包含匹配
                 if section_name in key or key in section_name:
                     region = section_map[key]
                     break
@@ -1068,120 +1062,116 @@ class LawsuitGenerator:
             self._fill_checkbox_in_region(region_paragraphs, context, should_check)
 
     def _fill_field_in_region(self, paragraphs: list, label: str, value: str):
-        """在区域内段落中填充字段"""
+        """
+        在区域内段落中填充字段（空白模板版）
+        
+        空白模板特点：
+        - 简单字段：标签后直接为空（如"姓名："）
+        - 金额字段：标签后有空白位+单位（如"营养费                元"）
+        - 日期字段：标签后有"年月日"模板结构（如"出生日期：      年  月  日  民族："）
+        
+        填充策略：
+        1. 找到包含标签的段落
+        2. 在标签文本末尾追加值
+        3. 清除标签后到下一个"字段标签"（冒号结尾短文本）之前的所有内容
+        """
         ns = self.NAMESPACES
 
-        # 收集所有匹配段落，优先填有空白位的（数据录入段 > 标题段）
+        # 找最佳匹配段落：标签在段首的优先，跳过纯标题段
         matched = []
         for p in paragraphs:
             full_text = self._get_para_text(p)
             if label not in full_text:
                 continue
-            # 判断是标题段还是数据录入段
-            # 数据录入段：标签后有空白（待填入值）
-            # 标题段：标签后无空白（如"3. 营养费"）
-            idx = full_text.index(label) + len(label)
-            after = full_text[idx:]
-            has_blank = bool(after.strip())  # 标签后有内容说明有空白位或单位
-            is_heading = not after.strip() or full_text.strip().startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.', '12.', '13.'))
-            priority = 0 if has_blank and not is_heading else 1
+            label_pos = full_text.index(label)
+            is_heading = full_text.strip().startswith(
+                ('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.', '12.', '13.'))
+            # 标题段处理：如果后续段落也包含相同标签，跳过标题段
+            # （如"3. 营养费"后有"营养费                元"，标题段跳过）
+            # 如果标题段是唯一包含该标签的段落（如"13. 标的总额"），则保留
+            if is_heading:
+                # 检查是否有非标题段也包含此标签
+                has_data_para = False
+                for p2 in paragraphs:
+                    ft2 = self._get_para_text(p2)
+                    if label in ft2 and p2 is not p:
+                        is_heading2 = ft2.strip().startswith(
+                            ('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.', '12.', '13.'))
+                        if not is_heading2:
+                            has_data_para = True
+                            break
+                if has_data_para:
+                    continue  # 有独立数据段，跳过标题段
+            priority = 0 if label_pos <= 5 else 50 + label_pos
             matched.append((priority, p, full_text))
 
         if not matched:
             return
 
-        # 按优先级排序，优先填数据录入段
         matched.sort(key=lambda x: x[0])
+        _, p, full_text = matched[0]
+        t_elems = list(p.findall('.//w:t', ns))
 
-        for _, p, full_text in matched:
-            t_elems = p.findall('.//w:t', ns)
+        # 构建字符偏移映射
+        offsets = []
+        pos = 0
+        for t in t_elems:
+            text = t.text or ''
+            offsets.append((t, pos, pos + len(text)))
+            pos += len(text)
 
-            # 策略0：标签跨多个<w:t>（如"住所地（户籍所在地"+"）："）
-            # 拼接后能匹配，但单个<w:t>不包含完整标签
-            single_match = any(t.text and label in t.text for t in t_elems if t.text)
-            if not single_match and label in full_text:
-                # 找到标签结束位置对应的<w:t>元素
-                # 拼接前序文本，找到label结束的那个<w:t>
-                accumulated = ''
-                for t in t_elems:
-                    if not t.text:
-                        continue
-                    prev_accumulated = accumulated
-                    accumulated += t.text
-                    if label in accumulated:
-                        # label的结尾在这个<w:t>中
-                        label_end_in_full = full_text.index(label) + len(label)
-                        # 计算这个<w:t>中label结束后还剩多少
-                        label_start_in_accumulated = prev_accumulated.__len__()
-                        remaining_in_this_t = accumulated.__len__() - label_start_in_accumulated
-                        after_label = t.text[t.text.index(accumulated[label_start_in_accumulated:][:len(label) - max(0, len(label) - len(prev_accumulated))]):] if len(prev_accumulated) < len(label) else t.text[t.text.index(label[len(prev_accumulated):]) + len(label[len(prev_accumulated):]):]
-                        # 简化：直接在最后一个包含label部分的<w:t>末尾追加
-                        # 先找到label在full_text中的结束位置，然后定位到对应的<w:t>
-                        break
+        # 定位标签结束位置
+        label_start = full_text.index(label)
+        label_end = label_start + len(label)
 
-                # 更简洁的策略：在标签结束的最后一个<w:t>后面追加新run
-                # 或者：找到最后一个包含label片段的<w:t>，在其文本末尾追加value
-                accumulated = ''
-                last_label_t = None
-                for t in t_elems:
-                    if not t.text:
-                        continue
-                    prev_len = len(accumulated)
-                    accumulated += t.text
-                    if full_text.index(label) + len(label) <= len(accumulated) and full_text.index(label) >= prev_len or (full_text.index(label) >= prev_len and full_text.index(label) < len(accumulated)):
-                        last_label_t = t
-                    if label in accumulated and len(accumulated) >= full_text.index(label) + len(label):
-                        last_label_t = t
-                        break
+        # 定位清除边界：下一个字段标签（以中文冒号结尾的2-6字短文本）
+        clear_end = len(full_text)  # 默认清除到段落末尾
+        for m in re.finditer(r'[一-鿿/]{2,6}[：:]', full_text[label_end:]):
+            clear_end = label_end + m.start()
+            break
 
-                if last_label_t is not None:
-                    # 在这个<w:t>的文本后追加value
-                    last_label_t.text = last_label_t.text + value
-                    last_label_t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-                    return
+        # 找到包含标签结束位置的<w:t>
+        label_end_t = None
+        label_end_pos_in_t = None
+        for t, start, end in offsets:
+            if start <= label_end <= end:
+                label_end_t = t
+                label_end_pos_in_t = label_end - start
+                break
 
-            # 策略1：标签和值在同一个<w:t>中，标签后是空白
-            for t in t_elems:
-                if not t.text or label not in t.text:
-                    continue
+        if label_end_t is None:
+            return
 
-                idx = t.text.index(label) + len(label)
-                after = t.text[idx:]
+        # 在标签结束位置截断，追加新值
+        # 如果清除边界后有保留内容，值末尾加空格分隔
+        display_value = value
+        if clear_end < len(full_text):
+            display_value = value.rstrip() + ' '
+        label_end_t.text = label_end_t.text[:label_end_pos_in_t] + display_value
+        label_end_t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
 
-                # 标签后是空白或空的，直接追加
-                if not after.strip() or re.match(r'^[\s　]+$', after):
-                    t.text = t.text[:idx] + value
+        # 清除标签<w:t>之后到clear_end之间的所有<w:t>内容
+        found_label_t = False
+        for t, start, end in offsets:
+            if t is label_end_t:
+                found_label_t = True
+                continue
+            if not found_label_t:
+                continue
+            if start >= clear_end:
+                break  # 超出清除范围
+            if end <= clear_end:
+                # 完全在清除范围内
+                t.text = ''
+            else:
+                # 跨越清除边界，保留边界之后的部分
+                keep_start = clear_end - start
+                if t.text and len(t.text) > keep_start:
+                    t.text = t.text[keep_start:]
                     t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-                    return
+                else:
+                    t.text = ''
 
-            # 策略2：标签在一个<w:t>，值要填在后续的空<w:t>中
-            runs = list(p.findall('w:r', ns))
-            label_run_idx = None
-
-            for ri, r in enumerate(runs):
-                for t in r.findall('w:t', ns):
-                    if t.text and label in t.text:
-                        label_run_idx = ri
-                        break
-                if label_run_idx is not None:
-                    break
-
-            if label_run_idx is not None:
-                # 找标签run后的空run
-                for next_r in runs[label_run_idx + 1:]:
-                    for t in next_r.findall('w:t', ns):
-                        if not t.text or not t.text.strip():
-                            t.text = value
-                            t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-                            return
-
-                # 没有空run，在标签文本后追加
-                for t in runs[label_run_idx].findall('w:t', ns):
-                    if t.text and label in t.text:
-                        idx = t.text.index(label) + len(label)
-                        t.text = t.text[:idx] + value
-                        t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-                        return
 
     def _fill_checkbox_in_region(self, paragraphs: list, context: str, should_check: bool):
         """在区域内处理勾选框"""
