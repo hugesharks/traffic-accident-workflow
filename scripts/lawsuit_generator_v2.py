@@ -1113,6 +1113,8 @@ class LawsuitGenerator:
         
         # === 特殊处理：标题+空段落模式 ===
         # 如"1. 交通事故发生情况"标题后跟空段落，应填入空段落而非标题
+        # 关键约束：标签段落和空段落必须在同一个表格行(<w:tr>)内，
+        # 否则会跨行误填（如"证件号码："P28的下一个空段落P29在下一行法人区域的C0列）
         p_idx = None
         for pi, pp in enumerate(paragraphs):
             if pp is p:
@@ -1122,8 +1124,8 @@ class LawsuitGenerator:
         if p_idx is not None and p_idx + 1 < len(paragraphs):
             next_p = paragraphs[p_idx + 1]
             next_text = self._get_para_text(next_p).strip()
-            if not next_text:
-                # 下一段是空段落，将内容填入空段落
+            if not next_text and self._same_table_row(p, next_p):
+                # 下一段是空段落且在同一表格行，将内容填入空段落
                 next_t_elems = list(next_p.findall('.//w:t', ns))
                 if next_t_elems:
                     next_t_elems[0].text = value
@@ -1202,6 +1204,36 @@ class LawsuitGenerator:
                 else:
                     t.text = ''
 
+
+    def _same_table_row(self, p1, p2) -> bool:
+        """检查两个段落是否在同一个表格行(<w:tr>)内"""
+        # 构建parent map（缓存到实例以避免重复构建）
+        if not hasattr(self, '_parent_map'):
+            pm = {}
+            if self.root is not None:
+                for parent in self.root.iter():
+                    for child in parent:
+                        pm[child] = parent
+            self._parent_map = pm
+
+        def find_ancestor(elem, tag):
+            while elem is not None:
+                t = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+                if t == tag:
+                    return elem
+                elem = self._parent_map.get(elem)
+            return None
+
+        tr1 = find_ancestor(p1, 'tr')
+        tr2 = find_ancestor(p2, 'tr')
+        # 两个都在表格行内，且是同一行
+        if tr1 is not None and tr2 is not None:
+            return tr1 is tr2
+        # 都不在表格行内（普通段落），视为同行
+        if tr1 is None and tr2 is None:
+            return True
+        # 一个在表内一个不在，不同行
+        return False
 
     def _fill_checkbox_in_region(self, paragraphs: list, context: str, should_check: bool):
         """在区域内处理勾选框"""
