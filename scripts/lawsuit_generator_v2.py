@@ -514,6 +514,15 @@ class LawsuitGenerator:
         with open(doc_path, 'w', encoding='utf-8') as f:
             f.write(self._xml_decl + xml_str)
 
+        # 去除最高法模板自带的documentProtection标签（enforcement=0未启用但WPS/Word可能弹保护提示）
+        settings_path = os.path.join(self.unpacked_dir, 'word/settings.xml')
+        if os.path.exists(settings_path):
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = f.read()
+            settings = re.sub(r'<w:documentProtection[^/]*/>', '', settings)
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                f.write(settings)
+
         output_path = os.path.join(self.output_dir, filename)
         if os.path.exists(output_path):
             os.remove(output_path)
